@@ -1,7 +1,7 @@
 <template>
     <i-row>
         <i-col span="4">
-            <i-menu :active-name="activeMenu" width="auto" style="z-index: 8;" @on-select="getSubLecture">
+            <i-menu ref="menu" :active-name="activeMenu" width="auto" style="z-index: 8;" @on-select="getSubLecture">
                 <i-menu-item name="New" style="border-bottom: 1px dashed #dcdee2;">
                     <Icon type="md-add-circle" color="#2d8cf0"/>
                     新建子讲座
@@ -82,9 +82,19 @@
                                     </i-row>
                                 </i-form>
                             </i-col>
-                            <i-col>
-                                <p style="color: rgb(128, 134, 149);">状态</p>
-                                <p style="font-size: 24px;">{{subLecture.status}}</p>
+                            <i-col style="width: 100px">
+                                <i-row>
+                                    <p style="color: rgb(128, 134, 149);">状态</p>
+                                    <p style="font-size: 24px;">{{subLecture.status}}</p>
+                                </i-row>
+                                <i-row style="bottom: 0px; position: absolute;">
+                                    <Tooltip placement="left">
+                                        <div id="qrcode"></div>
+                                        <div slot="content" class="url_content">
+                                            {{qrCodeUrl}}
+                                        </div>
+                                    </Tooltip >
+                                </i-row>
                             </i-col>
                         </i-row>
                     </i-col>
@@ -112,6 +122,7 @@
                                 </template>
                             </Table>
                         </i-row>
+                        <i-page style="margin-top: 8px" :total="pageData.signUp.total" show-sizer show-total @on-change="getLectureSignUp(null, $event, null)" @on-page-size-change="getLectureSignUp(null, null, $event)"/>
                     </i-tab-pane>
                     <i-tab-pane label="签到管理" name="name3">
                         <i-row type="flex" justify="space-between">
@@ -125,6 +136,7 @@
                         <i-row class="table-margin">
                             <Table stripe :columns="signInCol" :data="signInData"></Table>
                         </i-row>
+                        <i-page style="margin-top: 8px" :total="pageData.signIn.total" show-sizer show-total @on-change="getSubLectureSingIn(null, $event, null)" @on-page-size-change="getSubLectureSingIn(null, null, $event)" />
                     </i-tab-pane>
                 </i-tabs>
             </i-card>
@@ -134,8 +146,10 @@
 </template>
 
 <script>
+import QRCode from 'qrcodejs2'
 const app = require("@/config")
 const axios = require("axios");
+const urlPrefix = "http://localhost:8081/mob/";
 export default {
     data () {
         return {
@@ -213,18 +227,49 @@ export default {
             lectureData: {},
             selected: "",
             activeMenu: "New",
-            signInData: []
+            signInData: [],
+            qrcode: {},
+            qrCodeUrl: "",
+            pageData: {
+                signUp: {
+                    total: 0,
+                    page: 1,
+                    pageSize: 10
+                },
+                signIn: {
+                    total: 0,
+                    page: 1,
+                    pageSize: 10
+                }
+            },
+            lectureId: ""
         }
     },
     created () {
-        this.getSubLectures(this.$route.query.id);
+        this.lectureId = this.$route.query.id;
+    },
+    mounted () {
+        this.qrcode = new QRCode('qrcode', {
+            width: 100, // 图像宽度
+            height: 100, // 图像高度
+            colorDark: "#000000", // 前景色
+            colorLight: "#ffffff", // 背景色
+            correctLevel: QRCode.CorrectLevel.H // 容错级别 容错级别有：（1）QRCode.CorrectLevel.L （2）QRCode.CorrectLevel.M （3）QRCode.CorrectLevel.Q （4）QRCode.CorrectLevel.H
+        })
+        this.getSubLectures(this.lectureId);
     },
     methods: {
         /* 获取报名状态 */
-        getLectureSignUp (lectureId) {
-            axios.post("/api/activity/GetSignUps", {id: lectureId}, msg => {
+        getLectureSignUp (lectureId, targetPage, targetPageSize) {
+            lectureId = lectureId || this.lectureId;
+            let page = targetPage || this.pageData.signIn.page;
+            let pageSize = targetPageSize || this.pageData.signIn.pageSize;
+            axios.post("/api/activity/GetSignUps", {id: lectureId, page, pageSize}, msg => {
                 if (msg.success) {
                     this.signUpData = msg.data;
+                    this.pageData.signUp.total = msg.totalRow;
+                    this.pageData.signUp.page = msg.page;
+                    this.pageData.signUp.pageSize = msg.pageSize;
                 } else {
                     this.$Message.error(msg.msg);
                 }
@@ -235,7 +280,7 @@ export default {
             form.validate((valid) => {
                 if (valid) {
                     this.savingSubLecture = true;
-                    axios.post("/api/activity/SaveActivity", {
+                    axios.postStream("/api/activity/SaveActivity", {
                         ID: this.subLecture.id,
                         Name: this.subLecture.title,
                         BeginOn: this.timeToString(this.subLecture.beginOn),
@@ -254,8 +299,6 @@ export default {
                             this.showModal = false;
                             this.addSubLectureMode = false;
                             this.getSubLectures(this.$route.query.id);
-                            this.activeMenu = this.subLectureData[0].ID;
-                            this.getSubLecture(this.subLectureData[0].ID);
                         } else {
                             this.$Message.error(`${msg.msg}：${msg.errors}`);
                         }
@@ -264,7 +307,7 @@ export default {
             })
         },
         saveIntroduction () {
-            axios.post("/api/activity/SaveActivityCategory", this.lectureData, msg => {
+            axios.postStream("/api/activity/SaveActivityCategory", this.lectureData, msg => {
                 if (msg.success) {
                     this.$Message.success("已保存母讲座简介");
                 } else {
@@ -274,16 +317,33 @@ export default {
         },
         getSubLectures (lectureId) {
             this.menuLoading = true;
+            this.$Spin.show();
             axios.post("/api/activity/GetActivityCategory", {id: lectureId}, msg => {
+                this.$Spin.hide();
                 this.menuLoading = false;
                 if (msg.success) {
                     this.lectureData = msg.data;
                     this.subLectureData = msg.activities;
                     this.getLectureSignUp(lectureId);
+                    // 设置当前选中的菜单项，注意在$nextTick中调用
+                    if (this.subLectureData.length) {
+                        let index = typeof this.activeMenu === "number" ? this.activeMenu : 0;
+                        this.activeMenu = index;
+                        this.getSubLecture(index);
+                        let menu = this.$refs["menu"];
+                        this.$nextTick(() => {
+                            menu.updateActiveName(index);
+                        })
+                    }
                 } else {
                     this.$Message.error(msg.msg);
                 }
             })
+        },
+        qrCode (url) {
+            this.qrcode.clear(); // 清除二维码
+            this.qrcode.makeCode(urlPrefix + url); // 生成另一个新的二维码
+            this.qrCodeUrl = urlPrefix + url;
         },
         getSubLecture (index) {
             if (typeof index === "number") {
@@ -301,6 +361,8 @@ export default {
                 this.subLecture.place = this.subLectureData[index].Address;
                 this.subLecture.status = this.subLectureData[index].Status;
 
+                this.qrCode(`signIn/signIn?id=${this.subLectureData[index].ID}`);
+
                 this.getSubLectureSingIn(this.subLecture.id);
             } else if (index === "New") {
                 this.addSubLectureMode = true;
@@ -310,10 +372,16 @@ export default {
                 this.signUpData = [];
             }
         },
-        getSubLectureSingIn (subLectureId) {
-            axios.post("/api/activity/GetSignIns", {id: subLectureId}, msg => {
+        getSubLectureSingIn (subLectureId, targetPage, targetPageSize) {
+            subLectureId = subLectureId || this.subLecture.id;
+            let page = targetPage || this.pageData.signIn.page;
+            let pageSize = targetPageSize || this.pageData.signIn.pageSize;
+            axios.post("/api/activity/GetSignIns", {id: subLectureId, page, pageSize}, msg => {
                 if (msg.success) {
                     this.signInData = msg.data;
+                    this.pageData.signIn.total = msg.totalRow;
+                    this.pageData.signIn.page = msg.page;
+                    this.pageData.signIn.pageSize = msg.pageSize;
                 } else {
                     this.$Message.error(msg.msg);
                 }
@@ -327,13 +395,12 @@ export default {
                     axios.post("/api/activity/RemoveActivity", {id: this.subLecture.id}, msg => {
                         if (msg.success) {
                             this.$Message.success("删除成功");
+                            this.activeMenu = 0;
                             this.getSubLectures(this.$route.query.id);
-                            this.$router.go(0)
                         } else {
                             this.$Message.error(msg.msg);
                         }
                     })
-                    // location.reload();
                 }
             })
         },
@@ -395,5 +462,9 @@ export default {
     padding: 8px 24px;
     background: #fff;
     border-right: 1px solid #dcdee2;
+}
+.url_content {
+    white-space: normal;
+    word-break: break-all;
 }
 </style>
